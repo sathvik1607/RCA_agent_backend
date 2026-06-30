@@ -1,0 +1,78 @@
+from datetime import datetime
+from enum import Enum
+from pydantic import BaseModel, Field
+
+
+
+
+
+class Severity(str, Enum):
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+class IncidentCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200)
+    severity: Severity
+    service: str = Field(..., min_length=1)
+    environment: str = Field(..., min_length=1)
+    symptoms: str | None = Field(None, max_length=2000)
+
+
+class IncidentResponse(IncidentCreate):
+    id: int
+    status: str = "open"
+    created_at: datetime
+    updated_at: datetime
+
+
+class RCAResponse(BaseModel):
+
+    root_cause: str
+
+    confidence: int
+
+    recommended_fix: str
+
+    first_action: str
+
+    recalled_from: list[str]
+
+
+class IncidentResolveRequest(BaseModel):
+    fix_applied: str = Field(..., min_length=1, max_length=2000)
+
+
+class IncidentDetailResponse(IncidentResponse):
+    root_cause: str | None = None
+    confidence: int | None = None
+    recommended_fix: str | None = None
+    first_action: str | None = None
+    recalled_from: list[str] | None = None
+    fix_applied: str | None = None
+
+
+class Incident(BaseModel):
+    id: int
+
+    title: str
+
+    severity: Severity
+
+    service: str
+
+    environment: str
+
+    symptoms: str | None = None
+
+    status: str
+
+    created_at: datetime
+
+    updated_at: datetime
+
+    root_cause: str | None = None
+
+    fix_applied: str | None = None
