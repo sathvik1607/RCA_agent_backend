@@ -64,6 +64,11 @@ async def create_incident(data: IncidentCreate) -> IncidentDetailResponse:
     _t_total = time.perf_counter()
     with Timer("recall_total"):
         similar_incidents = await recall_similar_incidents(incident)
+    similar_incidents = [
+        t
+        for t in similar_incidents
+        if _score_recalled(t, incident.service, incident.environment) > 0
+    ]
     similar_incidents.sort(
         key=lambda t: _score_recalled(t, incident.service, incident.environment),
         reverse=True,
