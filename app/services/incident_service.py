@@ -1,6 +1,8 @@
+import time
 from datetime import datetime, timezone
 import cognee
 from sqlalchemy import select
+from app.perf import Timer
 from app.database import async_session
 from app.models.incident import IncidentModel
 from app.action.generate_rca import generate_rca
@@ -59,38 +61,50 @@ async def create_incident(data: IncidentCreate) -> IncidentDetailResponse:
         updated_at=now,
     )
 
-    similar_incidents = await recall_similar_incidents(incident)
+    _t_total = time.perf_counter()
+    with Timer("recall_total"):
+        similar_incidents = await recall_similar_incidents(incident)
     similar_incidents.sort(
         key=lambda t: _score_recalled(t, incident.service, incident.environment),
         reverse=True,
     )
-    rca = await generate_rca(incident, similar_incidents)
+    with Timer("generate_rca_total"):
+        rca = await generate_rca(incident, similar_incidents)
 
     incident.root_cause = rca.root_cause
 
     recalled_items = [_parse_recalled(s) for s in similar_incidents]
 
-    async with async_session() as session:
-        db_incident = IncidentModel(
-            title=data.title,
-            severity=data.severity.value,
-            service=data.service,
-            environment=data.environment,
-            symptoms=data.symptoms,
-            status="open",
-            root_cause=rca.root_cause,
-            confidence=rca.confidence,
-            recommended_fix=rca.recommended_fix,
-            first_action=rca.first_action,
-            recalled_from=[r.model_dump() for r in recalled_items],
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(db_incident)
-        await session.commit()
-        await session.refresh(db_incident)
+    with Timer("db_total"):
+        async with async_session() as session:
+            db_incident = IncidentModel(
+                title=data.title,
+                severity=data.severity.value,
+                service=data.service,
+                environment=data.environment,
+                symptoms=data.symptoms,
+                status="open",
+                root_cause=rca.root_cause,
+                confidence=rca.confidence,
+                recommended_fix=rca.recommended_fix,
+                first_action=rca.first_action,
+                recalled_from=[r.model_dump() for r in recalled_items],
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(db_incident)
+            with Timer("db_commit(acquire+insert+commit)"):
+                await session.commit()
+            with Timer("db_refresh"):
+                await session.refresh(db_incident)
 
-    await remember_incident(incident)
+    # Index into memory in the background: it's the slow part (~minutes of graph
+    # extraction) and recall already ran above, so the response shouldn't wait.
+    with Timer("remember_schedule(background=True)"):
+        await remember_incident(incident, background=True)
+    logger_perf_total = (time.perf_counter() - _t_total) * 1000
+    from app.perf import logger as _plog
+    _plog.info("[PERF] %-30s %10.1f ms", "CREATE_INCIDENT_TOTAL", logger_perf_total)
 
     return IncidentDetailResponse(
         id=db_incident.id,
