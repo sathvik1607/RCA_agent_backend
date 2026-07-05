@@ -1,6 +1,7 @@
 import time
 from datetime import datetime, timezone
 import cognee
+from fastapi import BackgroundTasks
 from sqlalchemy import select
 from app.perf import Timer
 from app.database import async_session
@@ -46,7 +47,9 @@ def _parse_recalled(text: str) -> RecalledFromItem:
     )
 
 
-async def create_incident(data: IncidentCreate) -> IncidentDetailResponse:
+async def create_incident(
+    data: IncidentCreate, background_tasks: BackgroundTasks
+) -> IncidentDetailResponse:
     now = datetime.now(timezone.utc)
 
     incident = Incident(
@@ -103,10 +106,12 @@ async def create_incident(data: IncidentCreate) -> IncidentDetailResponse:
             with Timer("db_refresh"):
                 await session.refresh(db_incident)
 
-    # Index into memory in the background: it's the slow part (~minutes of graph
-    # extraction) and recall already ran above, so the response shouldn't wait.
-    with Timer("remember_schedule(background=True)"):
-        await remember_incident(incident, background=True)
+    # Index into memory after the response is sent: it's the slow part (~minutes
+    # of graph extraction) and recall already ran above, so the client shouldn't
+    # wait on it. `await`-ing remember_incident here would still block the
+    # response no matter what flag we pass it, since await always waits for the
+    # coroutine to finish.
+    background_tasks.add_task(remember_incident, incident, True)
     logger_perf_total = (time.perf_counter() - _t_total) * 1000
     from app.perf import logger as _plog
     _plog.info("[PERF] %-30s %10.1f ms", "CREATE_INCIDENT_TOTAL", logger_perf_total)
@@ -130,7 +135,7 @@ async def create_incident(data: IncidentCreate) -> IncidentDetailResponse:
 
 
 async def resolve_incident(
-    incident_id: int, data: IncidentResolveRequest
+    incident_id: int, data: IncidentResolveRequest, background_tasks: BackgroundTasks
 ) -> IncidentDetailResponse | None:
     async with async_session() as session:
         result = await session.execute(
@@ -160,8 +165,8 @@ async def resolve_incident(
         root_cause=db_incident.root_cause,
         fix_applied=db_incident.fix_applied,
     )
-    await remember_incident(incident)
-    await cognee.improve()
+    background_tasks.add_task(remember_incident, incident)
+    background_tasks.add_task(cognee.improve)
 
     return IncidentDetailResponse(
         id=db_incident.id,
